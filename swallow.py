@@ -18,9 +18,7 @@ def loader(config_dict, _):
 DEFAULT_PORT = 'ttyUSB0'
 BAUDRATE = 9600
 DEBUG_READ = 0
-PACKET_CHAR_COUNT = 98
 PACKET_BYTE_COUNT = 49
-MULT_1 = 0.1
 BASE = 16
 
 
@@ -41,8 +39,6 @@ class SwallowDriver(weewx.drivers.AbstractDevice):
     def __init__(self, **stn_dict):
 	self.port = stn_dict.get('port', DEFAULT_PORT)
 	self.loop_interval = float(stn_dict.get('loop_interval', 60.0))
-	self.last_rain = 0.0
-	self.last_geiger = 0
 	loginf('driver version is %s ' % DRIVER_VERSION)
 	loginf('using serial port %s ' % self.port)
 
@@ -65,36 +61,25 @@ class SwallowDriver(weewx.drivers.AbstractDevice):
 	    packet = {'dateTime': int(time.time() + 0.5),
 		      'usUnits': weewx.METRIC}
 	    readings = self.station.get_readings()
-	    data = Station.parse_readings(readings)
+	    data = self.station.parse_readings(readings)
+            Station.print_data(data)
 	    packet.update(data)
-	    self._augment_packet(packet)
 	    time.sleep(self.loop_interval)
 	    yield packet
 
-		
-    def _augment_packet(self, packet):
-	# calculate the rain delta from rain total
-	if self.last_rain != 0.0:
-	    packet['deltarain'] = packet['long_term_rain'] - self.last_rain
-	    loginf("deltarain:    %.1f" % packet['deltarain'])
-	else:
-	    packet['deltarain'] = None
-	self.last_rain = packet['long_term_rain']
-
-	if self.last_geiger != 0:
-	    packet['geiger'] = packet['long_term_geiger'] - self.last_geiger
-	    loginf("deltageiger:  %.d" % packet['geiger'])
-	else:
-	    packet['geiger'] = None
-	self.last_geiger = packet['long_term_geiger']
-
 class Station(object):
+    START = 5
+    END = -2
+    REQUEST = b'\xAA\xBB\x00\x02\x2A\x6E\xFE'
+    MAX_HUMI = 100.0
+    MIN_HUMI = 0.0
     def __init__(self, port):
 	self.port = port
 	self.baudrate = BAUDRATE
 	self.timeout = 3
 	self.serial_port = None
-	self._last_rain = 0
+	self.last_rain = 0.0
+        self.last_geiger = 0
 
     def __enter__(self):
 	self.open()
@@ -113,111 +98,64 @@ class Station(object):
 	    self.serial_port = None
 
     def get_readings(self):
-	try2send = 0
-	while try2send < 3:
+	data_left = 0
+	while data_left < PACKET_BYTE_COUNT:
 	    self.serial_port.flushInput()
 	    self.serial_port.write(b'\xAA\xBB\x00\x02\x2A\x6E\xFE')
 	    time.sleep(10)
-	    data_left = 0
 	    data_left = self.serial_port.inWaiting()
-	    try2send += 1
-#            loginf("WARNING! data_left is not right: %d. Trying again..." % data_left)
-	    if  data_left >= PACKET_BYTE_COUNT:
-		break
-	    loginf("received data size: %d (must be 49)" % data_left)
-	
-	if data_left >=  PACKET_BYTE_COUNT:
-	    received_bytes = self.serial_port.read(PACKET_BYTE_COUNT)
-	    received_chars = ''
-	    for i in range(0, PACKET_BYTE_COUNT):
-		received_chars += (received_bytes[i]).encode('hex')
-	    loginf("RECEIVED: %s" % received_chars)
-	    validated_chars = Station.validate_string(received_chars)
-	return validated_chars
+	    
+        received_bytes = self.serial_port.read(PACKET_BYTE_COUNT)
+	return [str(val) for val in received_bytes[self.START:self.END]]
 
-    @property
-    def last_rain(self):
-	return self._last_rain
-    
-
-    @staticmethod
-    def validate_string(buf):
-	if len(buf) != PACKET_CHAR_COUNT:
-	    raise weewx.WeeWxIOError("Unexpected buffer length %d" % len(buf))
-	if buf[0:10] != 'ccdd00022a':
-	    raise weewx.WeeWxIOError("Unexpected header bytes '%s'" % buf[0:10])
-	buf = (buf.replace('ccdd00022a', ''))
-	loginf("VALIDATION OK %s" % buf)
-	return buf
-
-    @staticmethod
-    def parse_readings(raw):
-	"""SWALLOW DATA FORMAT:
-	    DDDDTTTTTTTTPPPPPPPPRRRRRRRRSSSSSSSSHHHHHHHHGGGGGGGGIIIIIIIIXXXXXXXX
-
-	    DDDD - wind direction
-	    TTTT - temperature
-	    PPPP - pressure
-	    RRRR - rain
-	    SSSS - wind speed
-	    HHHH - humidity
-	    GGGG - geiger
-	    IIII - illumination
-	    XXXX - internal temperature """
-
+    def parse_readings(self, raw):
 	data = dict()
+	raw.reverse()
 
-	data['windDir'] = int((raw[2:4] + raw[0:2]), BASE)
-	loginf("windDir:          %d" % data['windDir'])
-
-	data['outTemp'] =  struct.unpack('!f', (raw[10:12] + raw[8:10] + raw[6:8] + raw[4:6]).decode('hex'))[0]
-	loginf("outTemp:          %.1f" % data['outTemp'])
-
-	data['pressure'] = struct.unpack('!f', (raw[18:20] + raw[16:18] + raw[14:16] + raw[12:14]).decode('hex'))[0]
-	loginf("pressure:         %.1f" % data['pressure'])
-
-	data['long_term_rain'] = struct.unpack('!f', (raw[26:28] + raw[24:26] + raw[22:24] + raw[20:22]).decode('hex'))[0]
-	loginf("long_term_rain:   %.1f" % data['long_term_rain'])
-
-	data['windSpeed'] = struct.unpack('!f', (raw[34:36] + raw[32:34] + raw[30:32] + raw[28:30]).decode('hex'))[0]
-	loginf("windSpeed:        %.1f" % data['windSpeed'])
-
-	humi = struct.unpack('!f', (raw[42:44] + raw[40:42] + raw[38:40] + raw[36:38]).decode('hex'))[0] 
-	if humi > 100.0:
-	    data['outHumidity'] = 100.0
-	else:
-	    data['outHumidity'] = humi
-	loginf("outHumidity:      %.1f" % data['outHumidity'])
-
-	data['long_term_geiger'] = long((raw[50:52] + raw[48:50] + raw[46:48] + raw[44:46]), BASE)
-	loginf("long_term_geiger: %d" % data['long_term_geiger'])
-
-	data['illumination'] = struct.unpack('!f', (raw[58:60] + raw[56:58] + raw[54:56] + raw[52:54]).decode('hex'))[0]
-	loginf("illumination:     %.1f" % data['illumination'])
-
-	data['inTemp'] = struct.unpack('!f', (raw[66:68] + raw[64:66] + raw[62:64] + raw[60:62]).decode('hex'))[0]
-	loginf("inTemp:           %.1f" % data['inTemp'])
-
-	data['maxWind'] = struct.unpack('!f', (raw[74:76] + raw[72:74] + raw[70:72] + raw[68:70]).decode('hex'))[0]
-	loginf("maxWind:          %.1f" % data['maxWind'])
-
-	data['downfall'] = bool(long((raw[82:84] + raw[80:82] + raw[78:80] + raw[76:78]), BASE))
-	loginf("downfall:         %r" % data['downfall'])
-
+	data['windDir'] = Station.hex_to_int(''.join(raw[40:42]))
+	data['outTemp'] = Station.hex_to_float(''.join(raw[36:40]))
+	data['pressure'] = Station.hex_to_float(''.join(raw[32:36]))
+	data['long_term_rain'] = Station.hex_to_float(''.join(raw[28:32]))
+	data['windSpeed'] = Station.hex_to_float(''.join(raw[24:28]))
+	data['outHumidity'] = Station.get_humi(Station.hex_to_float(''.join(raw[20:24])))
+	data['long_term_geiger'] = Station.hex_to_int(''.join(raw[16:20]))
+	data['illumination'] = Station.hex_to_float(''.join(raw[12:16]))
+	data['inTemp'] = Station.hex_to_float(''.join(raw[8:12]))
+	data['maxWind'] = Station.hex_to_float(''.join(raw[4:8]))
+	data['downfall'] = bool(Station.hex_to_int(''.join(raw[0:4])))
+        data['deltarain'] = self.get_delta_rain(data['long_term_rain'])
+        data['geiger'] = self.get_delta_geiger(data['long_term_geiger'])
 	return data
 
+    @staticmethod
+    def hex_to_float(val):
+        return round(struct.unpack('!f', val)[0], 1)
 
     @staticmethod
-    def _decode(s, multiplier=None, neg=False):
-	v = None
-	try:
-	    v = int(s, 16)
-	    if neg:
-		bits = 4 * len(s)
-		if v & (1 << (bits - 1)) != 0:
-		    v -= (1 << bits)
-	    if multiplier is not None:
-		v *= multiplier
-	except ValueError, e:
-	    logdbg("decode failed for '%s' : %s" % (s, e))
-	return v
+    def hex_to_int(val):
+        return int(val.encode('hex'), BASE)
+
+    @staticmethod
+    def get_humi(val):
+        if val > Station.MAX_HUMI: return MAX_HUMI
+        if val < Station.MIN_HUMI: return MIN_HUMI
+	return val
+
+    @staticmethod
+    def print_data(data):
+        for k,v in data.items():
+            loginf('{0}: {1}'.format(k,v))
+
+    def get_delta_rain(self, longterm):
+        delta = 0.0
+        if (self.last_rain != 0.0) and (longterm > self.last_rain):
+            delta = longterm - self.last_rain
+        self.last_rain = longterm
+        return round(delta, 1)
+
+    def get_delta_geiger(self, longterm):
+        delta = 0
+        if (self.last_geiger != 0) and (longterm > self.last_geiger):
+            delta = longterm - self.last_geiger
+        self.last_geiger = longterm
+        return delta
