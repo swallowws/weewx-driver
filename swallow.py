@@ -174,10 +174,10 @@ class Station(object):
 
     def get_verifyed_outtemp(self, temp):
         if (self.last_outtemp == None) or (abs(self.last_outtemp - temp) < 5.0):
-            last_outtemp = temp
+            self.last_outtemp = temp
             return temp
         else 
-            return last_outtemp
+            return self.last_outtemp
 
 
 
