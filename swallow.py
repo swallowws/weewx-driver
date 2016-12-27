@@ -1,27 +1,25 @@
 """Driver for Swallow weather station"""
 
 from __future__ import with_statement
+from swallow_lib import check_and_repair
 import serial
 import syslog
 import time
 import struct
-
 import weewx.drivers
-
-from swallow_lib import check_and_repair
 
 DRIVER_NAME = 'Swallow'
 DRIVER_VERSION = '1.0'
-
-def loader(config_dict, _):
-    return SwallowDriver(**config_dict[DRIVER_NAME])
-
 DEFAULT_PORT = 'ttyUSB0'
 BAUDRATE = 9600
 DEBUG_READ = 0
 PACKET_BYTE_COUNT = 49
 BASE = 16
+DATA_START_INDEX = 2
+DATA_END_INDEX = -5
 
+def loader(config_dict, _):
+    return SwallowDriver(**config_dict[DRIVER_NAME])
 
 def logmsg(level, msg):
     syslog.syslog(level, 'swallow: %s' % msg)
@@ -59,18 +57,21 @@ class SwallowDriver(weewx.drivers.AbstractDevice):
 
     def genLoopPackets(self):
         while True:
-            packet = {'dateTime': int(time.time() + 0.5),
-                      'usUnits': weewx.METRIC}
-            readings = self.station.get_readings()
-            data = check_and_repair(self.station.parse_readings(readings))
+            readings = None
+            while True:
+                packet = {'dateTime': int(time.time() + 0.5),
+                          'usUnits': weewx.METRIC}
+                readings = self.station.get_readings()
+                readings.reverse()
+                if self.station.verify_readings(readings) == True:
+                    break;
+            data = check_and_repair(self.station.parse_readings(readings[DATA_START_INDEX:DATA_END_INDEX]))
             Station.print_data(data)
             packet.update(data)
             time.sleep(self.loop_interval)
             yield packet
 
 class Station(object):
-    START = 5
-    END = -2
     REQUEST = b'\xAA\xBB\x00\x02\x2A\x6E\xFE'
     MAX_HUMI = 100.0
     MIN_HUMI = 0.0
@@ -102,16 +103,25 @@ class Station(object):
         data_left = 0
         while data_left < PACKET_BYTE_COUNT:
             self.serial_port.flushInput()
-            self.serial_port.write(b'\xAA\xBB\x00\x02\x2A\x6E\xFE')
+            self.serial_port.write(Station.REQUEST)
             time.sleep(10)
             data_left = self.serial_port.inWaiting()
         
         received_bytes = self.serial_port.read(PACKET_BYTE_COUNT)
-        return [str(val) for val in received_bytes[self.START:self.END]]
+        loginf('SUCCESS: GET READINGS')
+        return [str(val) for val in received_bytes]
+
+    def verify_readings(self, readings):
+        data = 0xFFFF - sum([Station.hex_to_int(val) for val in readings[DATA_START_INDEX:]])
+        crc = Station.hex_to_int(''.join(readings[0:DATA_START_INDEX]))
+        if crc == data:
+            loginf('SUCCESS: VERIFY READINGS')
+            return True
+        loginf('FAILED: VERIFY READINGS')
+        return False
 
     def parse_readings(self, raw):
         data = dict()
-        raw.reverse()
 
         data['windDir'] = Station.hex_to_int(''.join(raw[40:42]))
         data['outTemp'] = Station.hex_to_float(''.join(raw[36:40]))
