@@ -176,7 +176,7 @@ class Station(object):
         if (self.last_outtemp == None) or (abs(self.last_outtemp - temp) < 5.0):
             self.last_outtemp = temp
             return temp
-        else 
+        else:
             return self.last_outtemp
 
 
