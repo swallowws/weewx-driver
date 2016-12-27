@@ -82,6 +82,7 @@ class Station(object):
         self.serial_port = None
         self.last_rain = 0.0
         self.last_geiger = 0
+        self.last_outtemp = None
 
     def __enter__(self):
         self.open()
@@ -124,7 +125,7 @@ class Station(object):
         data = dict()
 
         data['windDir'] = Station.hex_to_int(''.join(raw[40:42]))
-        data['outTemp'] = Station.hex_to_float(''.join(raw[36:40]))
+        data['outTemp'] = self.get_verifyed_outtemp(Station.hex_to_float(''.join(raw[36:40])))
         data['pressure'] = Station.hex_to_float(''.join(raw[32:36]))
         data['long_term_rain'] = Station.hex_to_float(''.join(raw[28:32]))
         data['windSpeed'] = Station.hex_to_float(''.join(raw[24:28]))
@@ -170,3 +171,14 @@ class Station(object):
             delta = longterm - self.last_geiger
         self.last_geiger = longterm
         return delta
+
+    def get_verifyed_outtemp(self, temp):
+        if (self.last_outtemp == None) or (abs(self.last_outtemp - temp) < 5.0):
+            last_outtemp = temp
+            return temp
+        else 
+            return last_outtemp
+
+
+
+
