@@ -1,7 +1,6 @@
 """Driver for Swallow weather station"""
 
 from __future__ import with_statement
-from swallow_lib import check_and_repair
 import serial
 import syslog
 import time
@@ -65,7 +64,7 @@ class SwallowDriver(weewx.drivers.AbstractDevice):
                 readings.reverse()
                 if self.station.verify_readings(readings) == True:
                     break;
-            data = check_and_repair(self.station.parse_readings(readings[DATA_START_INDEX:DATA_END_INDEX]))
+            data = self.station.parse_readings(readings[DATA_START_INDEX:DATA_END_INDEX])
             Station.print_data(data)
             packet.update(data)
             time.sleep(self.loop_interval)
